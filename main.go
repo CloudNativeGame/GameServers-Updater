@@ -31,7 +31,7 @@ type input struct {
 }
 
 type selectOption struct {
-	gssName           string
+	gssNames          []string
 	namespace         string
 	gsNames           []string
 	opsState          *gamekruiseiov1alpha1.OpsState
@@ -58,7 +58,12 @@ func main() {
 	flag.StringVar(&i.expNetworkDisabled, "exp-networkDisabled", "", "expNetworkDisabled")
 	flag.Parse()
 
-	so, err := consSelectOption(i)
+	ctx := context.Background()
+	cfg := config.GetConfigOrDie()
+	kruisegameClient := kruisegameclientset.NewForConfigOrDie(cfg)
+	kubeClient := clientset.NewForConfigOrDie(cfg)
+
+	so, err := consSelectOption(ctx, kruisegameClient, i)
 	if err != nil {
 		panic(err)
 	}
@@ -69,12 +74,6 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("expectOption: %+v\n", eo)
-
-	cfg := config.GetConfigOrDie()
-	kruisegameClient := kruisegameclientset.NewForConfigOrDie(cfg)
-	kubeClient := clientset.NewForConfigOrDie(cfg)
-
-	ctx := context.Background()
 
 	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, time.Duration(i.timeout)*time.Second, true, func(ctx context.Context) (done bool, err error) {
 		selectedGameServers, err := SelectGameServers(ctx, kruisegameClient, kubeClient, so)
@@ -119,56 +118,55 @@ func UpdateGameServers(ctx context.Context, kgClient *kruisegameclientset.Client
 func SelectGameServers(ctx context.Context, kgClient kruisegameclientset.Interface, kubeClient clientset.Interface, so *selectOption) ([]gamekruiseiov1alpha1.GameServer, error) {
 	var selectedGameServers []gamekruiseiov1alpha1.GameServer
 	var selectNames []string
-	if so == nil {
-		return selectedGameServers, nil
-	}
 
-	labelSelector := labels.SelectorFromSet(map[string]string{
-		gamekruiseiov1alpha1.GameServerOwnerGssKey: so.gssName,
-	}).String()
-	gsList, err := kgClient.GameV1alpha1().GameServers(so.namespace).List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
-	if err != nil {
-		return nil, err
-	}
-
-	for _, gs := range gsList.Items {
-		// filter by idList
-		if len(so.gsNames) > 0 && !util.IsStringInList(gs.Name, so.gsNames) {
-			continue
+	for _, gssName := range so.gssNames {
+		labelSelector := labels.SelectorFromSet(map[string]string{
+			gamekruiseiov1alpha1.GameServerOwnerGssKey: gssName,
+		}).String()
+		gsList, err := kgClient.GameV1alpha1().GameServers(so.namespace).List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
+		if err != nil {
+			return nil, err
 		}
 
-		// filter by opsState
-		if so.opsState != nil && gs.Spec.OpsState != *so.opsState {
-			continue
-		}
-
-		// filter by networkDisabled
-		if so.networkDisabled != nil && *so.networkDisabled != gs.Spec.NetworkDisabled {
-			continue
-		}
-
-		// filter by containerImage
-		if so.notContainerImage != nil {
-			pod, err := kubeClient.CoreV1().Pods(so.namespace).Get(ctx, gs.Name, metav1.GetOptions{})
-			if err != nil {
-				return nil, err
-			}
-			actual := getContainerImage(pod.DeepCopy())
-
-			hit := false
-			for container, image := range so.notContainerImage {
-				if actual[container] == image {
-					hit = true
-					break
-				}
-			}
-			if hit {
+		for _, gs := range gsList.Items {
+			// filter by idList
+			if len(so.gsNames) > 0 && !util.IsStringInList(gs.Name, so.gsNames) {
 				continue
 			}
-		}
 
-		selectedGameServers = append(selectedGameServers, gs)
-		selectNames = append(selectNames, gs.Name)
+			// filter by opsState
+			if so.opsState != nil && gs.Spec.OpsState != *so.opsState {
+				continue
+			}
+
+			// filter by networkDisabled
+			if so.networkDisabled != nil && *so.networkDisabled != gs.Spec.NetworkDisabled {
+				continue
+			}
+
+			// filter by containerImage
+			if so.notContainerImage != nil {
+				pod, err := kubeClient.CoreV1().Pods(so.namespace).Get(ctx, gs.Name, metav1.GetOptions{})
+				if err != nil {
+					return nil, err
+				}
+				actual := getContainerImage(pod.DeepCopy())
+
+				hit := false
+				for container, image := range so.notContainerImage {
+					if actual[container] == image {
+						hit = true
+						break
+					}
+				}
+				if hit {
+					continue
+				}
+			}
+
+			selectedGameServers = append(selectedGameServers, gs)
+			selectNames = append(selectNames, gs.Name)
+		}
 	}
 
 	fmt.Printf("select GameServers Names: %v\n", selectNames)
@@ -197,20 +195,36 @@ func consExpectOption(i input) (*expectOption, error) {
 	}, nil
 }
 
-func consSelectOption(i input) (*selectOption, error) {
+func consSelectOption(ctx context.Context, kgClient kruisegameclientset.Interface, i input) (*selectOption, error) {
+	// parse gssNames
+	var gssNames []string
+	if i.gssName == "" {
+		gssList, err := kgClient.GameV1alpha1().GameServerSets(i.namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		for _, gss := range gssList.Items {
+			gssNames = append(gssNames, gss.Name)
+		}
+	} else {
+		gssNames = strings.Split(i.gssName, ",")
+	}
+
 	// parse selectIds
 	var gsNames []string
 	if i.selectIds != "" {
-		for _, idStr := range strings.Split(i.selectIds, ",") {
-			idInt, err := strconv.Atoi(idStr)
-			if err != nil {
-				return nil, err
+		for _, gssName := range gssNames {
+			for _, idStr := range strings.Split(i.selectIds, ",") {
+				idInt, err := strconv.Atoi(idStr)
+				if err != nil {
+					return nil, err
+				}
+				if idInt < 0 {
+					return nil, fmt.Errorf("invalid id %s", idStr)
+				}
+				gsName := gssName + "-" + idStr
+				gsNames = append(gsNames, gsName)
 			}
-			if idInt < 0 {
-				return nil, fmt.Errorf("invalid id %s", idStr)
-			}
-			gsName := i.gssName + "-" + idStr
-			gsNames = append(gsNames, gsName)
 		}
 	}
 
@@ -241,7 +255,7 @@ func consSelectOption(i input) (*selectOption, error) {
 	}
 
 	return &selectOption{
-		gssName:           i.gssName,
+		gssNames:          gssNames,
 		namespace:         i.namespace,
 		gsNames:           gsNames,
 		opsState:          opsState,
