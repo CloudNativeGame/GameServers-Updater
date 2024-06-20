@@ -32,7 +32,7 @@ spec:
       serviceAccountName: kruise-game-controller-manager
       containers:
       - name: updater
-        image: registry.cn-beijing.aliyuncs.com/chrisliu95/gs-updater:v1.0
+        image: registry.cn-beijing.aliyuncs.com/chrisliu95/gs-updater:v1.1
         command:
           - /updater
         args:
@@ -61,7 +61,7 @@ spec:
       serviceAccountName: kruise-game-controller-manager
       containers:
       - name: updater
-        image: registry.cn-beijing.aliyuncs.com/chrisliu95/gs-updater:v1.0
+        image: registry.cn-beijing.aliyuncs.com/chrisliu95/gs-updater:v1.1
         command:
           - /updater
         args:
