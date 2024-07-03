@@ -246,9 +246,8 @@ func consSelectOption(ctx context.Context, kgClient kruisegameclientset.Interfac
 	var notContainerImage map[string]string
 	if i.selectNotContainerImage != "" {
 		for _, snci := range strings.Split(i.selectNotContainerImage, ",") {
-			strs := strings.Split(snci, "/")
-			container := strs[0]
-			image := strs[1]
+			container := strings.Split(snci, "/")[0]
+			image, _ := strings.CutPrefix(snci, container+"/")
 			notContainerImage = make(map[string]string)
 			notContainerImage[container] = image
 		}
